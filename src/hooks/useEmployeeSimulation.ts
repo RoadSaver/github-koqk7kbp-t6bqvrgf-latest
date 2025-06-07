@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { SimulatedEmployeeBlacklistService } from '@/services/simulatedEmployeeBlacklistService';
 
 interface EmployeeSimulation {
   id: number;
@@ -36,22 +37,33 @@ export const useEmployeeSimulation = () => {
     loadEmployees();
   }, [loadEmployees]);
 
-  const getRandomEmployee = useMemo(() => (excludedNames: string[] = []): EmployeeSimulation | null => {
-    const availableEmployees = employees.filter(emp => 
-      !excludedNames.includes(emp.full_name)
-    );
-    
-    if (availableEmployees.length === 0) {
+  const getAvailableEmployee = useMemo(() => async (requestId: string, excludedNames: string[] = []): Promise<EmployeeSimulation | null> => {
+    try {
+      // Get blacklisted employees for this specific request
+      const blacklistedEmployees = await SimulatedEmployeeBlacklistService.getBlacklistedEmployees(requestId);
+      
+      // Combine excluded names with blacklisted employees
+      const allExcludedNames = [...excludedNames, ...blacklistedEmployees];
+      
+      const availableEmployees = employees.filter(emp => 
+        !allExcludedNames.includes(emp.full_name)
+      );
+      
+      if (availableEmployees.length === 0) {
+        return null;
+      }
+      
+      return availableEmployees[Math.floor(Math.random() * availableEmployees.length)];
+    } catch (error) {
+      console.error('Error getting available employee:', error);
       return null;
     }
-    
-    return availableEmployees[Math.floor(Math.random() * availableEmployees.length)];
   }, [employees]);
 
   return {
     employees,
     isLoading,
-    getRandomEmployee,
+    getAvailableEmployee,
     loadEmployees
   };
 };

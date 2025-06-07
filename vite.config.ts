@@ -31,24 +31,37 @@ export default defineConfig(({ mode }) => ({
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: true,
-        drop_debugger: true,
+        drop_console: mode === 'production',
+        drop_debugger: mode === 'production',
+        pure_funcs: mode === 'production' ? ['console.log', 'console.info', 'console.debug'] : [],
       },
     },
     rollupOptions: {
       output: {
         manualChunks: {
-          react: ['react', 'react-dom'],
-          router: ['react-router-dom'],
-          ui: ['@radix-ui/react-dialog', '@radix-ui/react-tabs', '@radix-ui/react-toast'],
-          maps: ['@react-google-maps/api'],
-          supabase: ['@supabase/supabase-js'],
+          'react-vendor': ['react', 'react-dom'],
+          'router': ['react-router-dom'],
+          'ui-core': ['@radix-ui/react-dialog', '@radix-ui/react-tabs'],
+          'ui-forms': ['@radix-ui/react-toast', '@radix-ui/react-select', '@radix-ui/react-checkbox'],
+          'maps': ['@react-google-maps/api'],
+          'supabase': ['@supabase/supabase-js'],
+          'utils': ['clsx', 'tailwind-merge', 'class-variance-authority'],
         }
       }
     },
-    chunkSizeWarningLimit: 1000,
+    chunkSizeWarningLimit: 800,
+    target: 'es2020',
+    cssCodeSplit: true,
+    sourcemap: false,
   },
   esbuild: {
     drop: mode === 'production' ? ['console', 'debugger'] : [],
-  }
+    legalComments: 'none',
+    minifyIdentifiers: mode === 'production',
+    minifySyntax: mode === 'production',
+    minifyWhitespace: mode === 'production',
+  },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(mode),
+  },
 }));

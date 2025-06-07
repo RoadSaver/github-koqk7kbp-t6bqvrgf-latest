@@ -10,6 +10,9 @@ import { usePriceQuoteSnapshot } from '@/hooks/usePriceQuoteSnapshot';
 import { UserHistoryService } from '@/services/userHistoryService';
 import { SimulatedEmployeeBlacklistService } from '@/services/simulatedEmployeeBlacklistService';
 
+// Request states following Uber Eats/Glovo pattern
+type RequestState = 'idle' | 'searching' | 'quote_received' | 'accepted' | 'in_progress' | 'completed' | 'cancelled';
+
 export const useServiceRequest = (
   type: ServiceType,
   userLocation: { lat: number; lng: number }
@@ -23,58 +26,58 @@ export const useServiceRequest = (
   } = useRequestActions();
   const { storeSnapshot, loadSnapshot, storedSnapshot, moveToFinished } = usePriceQuoteSnapshot();
 
-  // Initialize states
+  // Core state management
   const [message, setMessage] = useState(() => serviceMessages[type] || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showRealTimeUpdate, setShowRealTimeUpdate] = useState(false);
-  const [showPriceQuote, setShowPriceQuote] = useState(false);
+  const [requestState, setRequestState] = useState<RequestState>('idle');
+  
+  // Employee and pricing state
+  const [assignedEmployee, setAssignedEmployee] = useState<string>('');
   const [priceQuote, setPriceQuote] = useState<number>(0);
-  const [originalPriceQuote, setOriginalPriceQuote] = useState<number>(0);
   const [employeeLocation, setEmployeeLocation] = useState<{ lat: number; lng: number } | undefined>(undefined);
-  const [status, setStatus] = useState<'pending' | 'accepted' | 'declined'>('pending');
-  const [declineReason, setDeclineReason] = useState('');
-  const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
-  const [employeeMovingLocation, setEmployeeMovingLocation] = useState<{ lat: number; lng: number } | undefined>(undefined);
   const [eta, setEta] = useState<string | null>(null);
+  
+  // Decline tracking
+  const [hasDeclinedOnce, setHasDeclinedOnce] = useState<boolean>(false);
   const [showWaitingForRevision, setShowWaitingForRevision] = useState(false);
 
-  // Employee assignment and decline tracking per request
-  const [assignedEmployee, setAssignedEmployee] = useState<string>('');
-  const [employeeDeclineCount, setEmployeeDeclineCount] = useState<number>(0);
-  const [hasReceivedRevision, setHasReceivedRevision] = useState<boolean>(false);
+  // Derived states for backward compatibility
+  const showRealTimeUpdate = requestState !== 'idle';
+  const showPriceQuote = requestState === 'quote_received';
+  const status = requestState === 'searching' ? 'pending' : 
+                requestState === 'accepted' || requestState === 'in_progress' ? 'accepted' : 
+                requestState === 'cancelled' ? 'declined' : 'pending';
 
-  // Reset employee assignment when a new request is started or finished
+  // Reset state when ongoing request changes
   useEffect(() => {
     if (!ongoingRequest) {
+      setRequestState('idle');
       setAssignedEmployee('');
-      setEmployeeDeclineCount(0);
-      setHasReceivedRevision(false);
-      setCurrentEmployeeName('');
+      setHasDeclinedOnce(false);
+      setPriceQuote(0);
+      setEmployeeLocation(undefined);
+      setEta(null);
+      setShowWaitingForRevision(false);
     }
   }, [ongoingRequest]);
 
-  // Update local states when ongoing request changes
+  // Sync with ongoing request
   useEffect(() => {
     if (ongoingRequest) {
-      if (ongoingRequest.priceQuote !== undefined) {
+      if (ongoingRequest.priceQuote !== undefined && ongoingRequest.priceQuote >= 0) {
         setPriceQuote(ongoingRequest.priceQuote);
-        if (originalPriceQuote === 0) {
-          setOriginalPriceQuote(ongoingRequest.priceQuote);
+        if (requestState === 'searching') {
+          setRequestState('quote_received');
         }
       }
-      if (ongoingRequest.employeeName) {
-        console.log('Setting employee name from ongoing request:', ongoingRequest.employeeName);
-        setCurrentEmployeeName(ongoingRequest.employeeName);
-        // Set assigned employee if not already set
-        if (!assignedEmployee) {
-          setAssignedEmployee(ongoingRequest.employeeName);
-        }
+      if (ongoingRequest.employeeName && !assignedEmployee) {
+        setAssignedEmployee(ongoingRequest.employeeName);
       }
-      if (ongoingRequest.id) {
-        loadSnapshot(ongoingRequest.id);
+      if (ongoingRequest.status === 'accepted' && requestState !== 'accepted' && requestState !== 'in_progress') {
+        setRequestState('accepted');
       }
     }
-  }, [ongoingRequest, originalPriceQuote, loadSnapshot, assignedEmployee]);
+  }, [ongoingRequest, requestState, assignedEmployee]);
 
   const handleSubmit = useCallback(() => {
     if (!validateMessage(message, type)) {
@@ -82,130 +85,101 @@ export const useServiceRequest = (
     }
 
     setIsSubmitting(true);
+    setRequestState('searching');
     
     setTimeout(() => {
       const requestId = Date.now().toString();
-      const timestamp = new Date().toISOString();
-      
-      // Reset employee assignment for new request
-      setAssignedEmployee('');
-      setEmployeeDeclineCount(0);
-      setHasReceivedRevision(false);
-      setCurrentEmployeeName('');
       
       const newOngoingRequest = {
         id: requestId,
         type,
         status: 'pending' as const,
         timestamp: new Date().toLocaleString(),
-        location: 'Sofia Center, Bulgaria',
-        declinedEmployees: []
+        location: 'Sofia Center, Bulgaria'
       };
       
       setOngoingRequest(newOngoingRequest);
-      setStatus('pending');
       setIsSubmitting(false);
-      setShowRealTimeUpdate(true);
       
       toast({
         title: "Request Sent",
-        description: "Your request has been sent to our team."
+        description: "Searching for available technician..."
       });
 
-      // Simulate finding an employee and getting a quote
+      // Find employee and get quote
       simulateEmployeeResponse(
         requestId,
-        timestamp,
+        new Date().toISOString(),
         type,
         userLocation,
-        async (quote: number) => {
-          console.log('Quote received from employee:', currentEmployeeName, 'Amount:', quote);
-          setPriceQuote(quote);
-          setOriginalPriceQuote(quote);
+        async (quote: number, employeeName: string) => {
+          console.log('Quote received:', quote, 'from:', employeeName);
           
-          await storeSnapshot(requestId, type, quote, currentEmployeeName, false);
-          
-          setOngoingRequest(prev => {
-            if (!prev) return null;
-            const updated = {
-              ...prev,
-              priceQuote: quote,
-              employeeName: currentEmployeeName
-            };
-            console.log('Updated ongoing request with employee name:', currentEmployeeName);
-            return updated;
-          });
-          
-          setShowRealTimeUpdate(false);
-          setShowPriceQuote(true);
-        },
-        setShowPriceQuote,
-        setShowRealTimeUpdate,
-        setStatus,
-        setDeclineReason,
-        setEmployeeLocation,
-        (employeeName: string) => {
-          console.log('Employee assignment callback:', employeeName);
-          if (employeeName && employeeName !== 'Unknown') {
-            setCurrentEmployeeName(employeeName);
-            // Assign employee to this request
+          // Only update if we're still in searching state
+          if (requestState === 'searching') {
+            setPriceQuote(quote);
             setAssignedEmployee(employeeName);
-            setEmployeeDeclineCount(0);
+            setRequestState('quote_received');
+            
+            await storeSnapshot(requestId, type, quote, employeeName, false);
+            
             setOngoingRequest(prev => prev ? {
               ...prev,
+              priceQuote: quote,
               employeeName: employeeName
             } : null);
-          } else {
-            setCurrentEmployeeName('');
-            setAssignedEmployee('');
-            setOngoingRequest(null);
-            setShowRealTimeUpdate(false);
-            setShowPriceQuote(false);
-            setStatus('declined');
-            setDeclineReason('No available employees. Please try again later.');
+            
             toast({
-              title: "No employees available",
-              description: "All employees are currently busy. Please try again later.",
-              variant: "destructive"
+              title: "Quote Received",
+              description: `${employeeName} sent you a quote for ${quote} BGN`
             });
           }
         },
-        [] // No blacklisted employees for initial assignment
+        () => {
+          // No employee available
+          setRequestState('cancelled');
+          setOngoingRequest(null);
+          toast({
+            title: "No technicians available",
+            description: "Please try again later.",
+            variant: "destructive"
+          });
+        }
       );
     }, 1500);
-  }, [validateMessage, message, type, setOngoingRequest, simulateEmployeeResponse, userLocation, storeSnapshot, currentEmployeeName]);
+  }, [validateMessage, message, type, setOngoingRequest, simulateEmployeeResponse, userLocation, storeSnapshot, requestState]);
 
   const handleAcceptQuote = useCallback(async () => {
-    if (!user || !ongoingRequest || !currentEmployeeName) return;
+    if (!user || !ongoingRequest || !assignedEmployee || requestState !== 'quote_received') return;
     
-    console.log('Accepting quote from employee:', currentEmployeeName);
+    console.log('Accepting quote from:', assignedEmployee);
     
-    // Generate employee starting location near user
+    setRequestState('accepted');
+    
+    // Generate employee starting location
     const employeeStartLocation = {
       lat: userLocation.lat + (Math.random() - 0.5) * 0.02,
       lng: userLocation.lng + (Math.random() - 0.5) * 0.02
     };
     
     setEmployeeLocation(employeeStartLocation);
-    setShowPriceQuote(false);
-    setShowRealTimeUpdate(true);
-    setStatus('accepted');
     
     setOngoingRequest(prev => prev ? { 
       ...prev, 
-      status: 'accepted' as const 
+      status: 'accepted' as const,
+      employeeLocation: employeeStartLocation
     } : null);
     
     toast({
       title: "Quote Accepted",
-      description: `${currentEmployeeName} is on the way to your location.`
+      description: `${assignedEmployee} is on the way to your location.`
     });
 
-    // Start the simulation with movement and ETA (15 seconds)
+    // Start service simulation
     await handleAccept(
       ongoingRequest.id,
-      ongoingRequest.priceQuote || priceQuote,
-      currentEmployeeName,
+      priceQuote,
+      assignedEmployee,
       user.username,
       userLocation,
       employeeStartLocation,
@@ -216,10 +190,12 @@ export const useServiceRequest = (
         setEta(`${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
       },
       (location) => {
-        setEmployeeMovingLocation(location);
+        setEmployeeLocation(location);
       },
       async () => {
         // Service completion
+        setRequestState('completed');
+        
         toast({
           title: "Service Completed",
           description: `Your ${type} service has been completed successfully.`
@@ -232,7 +208,7 @@ export const useServiceRequest = (
             username: user.username,
             service_type: type,
             status: 'completed',
-            employee_name: currentEmployeeName,
+            employee_name: assignedEmployee,
             price_paid: priceQuote,
             service_fee: 5,
             total_price: priceQuote + 5,
@@ -246,33 +222,23 @@ export const useServiceRequest = (
           console.error('Error recording completion:', error);
         }
         
-        // Clean up state and close all windows
+        // Clean up
         setOngoingRequest(null);
-        setShowRealTimeUpdate(false);
-        setShowPriceQuote(false);
-        setEmployeeMovingLocation(undefined);
-        setEta(null);
-        setAssignedEmployee('');
-        setEmployeeDeclineCount(0);
-        setHasReceivedRevision(false);
-        setCurrentEmployeeName('');
+        setRequestState('idle');
       }
     );
-  }, [user, ongoingRequest, currentEmployeeName, userLocation, setOngoingRequest, handleAccept, priceQuote, type]);
+  }, [user, ongoingRequest, assignedEmployee, requestState, userLocation, setOngoingRequest, handleAccept, priceQuote, type]);
 
   const handleDeclineQuote = useCallback(async (isSecondDecline: boolean = false) => {
-    if (!user || !assignedEmployee || !ongoingRequest) return;
+    if (!user || !assignedEmployee || !ongoingRequest || requestState !== 'quote_received') return;
     
-    console.log('Declining quote from employee:', assignedEmployee, 'Second decline:', isSecondDecline);
+    console.log('Declining quote from:', assignedEmployee, 'Second decline:', isSecondDecline);
     
-    const newDeclineCount = employeeDeclineCount + 1;
-    setEmployeeDeclineCount(newDeclineCount);
-    
-    if (newDeclineCount === 1 && !hasReceivedRevision) {
+    if (!hasDeclinedOnce && !isSecondDecline) {
       // First decline - same employee sends revision
-      setShowPriceQuote(false);
+      setHasDeclinedOnce(true);
+      setRequestState('searching');
       setShowWaitingForRevision(true);
-      setHasReceivedRevision(true);
       
       toast({
         title: "Quote Declined",
@@ -286,16 +252,13 @@ export const useServiceRequest = (
         // Generate revised quote (lower than original)
         const revisedQuote = Math.max(10, priceQuote - Math.floor(Math.random() * 15) - 5);
         setPriceQuote(revisedQuote);
-        
-        console.log('Revised quote from same employee:', assignedEmployee, 'Amount:', revisedQuote);
+        setRequestState('quote_received');
         
         setOngoingRequest(prev => prev ? {
           ...prev,
           priceQuote: revisedQuote,
-          employeeName: assignedEmployee // Keep same employee
+          employeeName: assignedEmployee
         } : null);
-        
-        setShowPriceQuote(true);
         
         toast({
           title: "Revised Quote Received",
@@ -304,10 +267,9 @@ export const useServiceRequest = (
       }, 2000);
       
     } else {
-      // Second decline OR decline after revision - blacklist employee and find new one
+      // Second decline - blacklist employee and find new one
       console.log('Second decline - blacklisting employee:', assignedEmployee);
       
-      // Add employee to blacklist
       try {
         await addEmployeeToBlacklist(ongoingRequest.id, assignedEmployee, user.username);
       } catch (error) {
@@ -333,99 +295,73 @@ export const useServiceRequest = (
         console.error('Error recording decline:', error);
       }
       
-      // Reset employee assignment and find new one
+      // Reset and find new employee
       const previousEmployee = assignedEmployee;
       setAssignedEmployee('');
-      setEmployeeDeclineCount(0);
-      setHasReceivedRevision(false);
-      setCurrentEmployeeName('');
-      
-      setShowPriceQuote(false);
-      setShowRealTimeUpdate(true);
-      setStatus('pending');
+      setHasDeclinedOnce(false);
+      setRequestState('searching');
       
       toast({
         title: "Quote Declined",
-        description: "Looking for another available employee..."
+        description: "Looking for another available technician..."
       });
       
-      // Find new employee (blacklist will be loaded from database)
+      // Find new employee
       setTimeout(() => {
-        const newRequestId = ongoingRequest.id; // Keep same request ID
-        
         simulateEmployeeResponse(
-          newRequestId,
+          ongoingRequest.id,
           new Date().toISOString(),
           type,
           userLocation,
-          (quote: number) => {
-            console.log('New quote from new employee:', currentEmployeeName, 'Amount:', quote);
+          (quote: number, employeeName: string) => {
+            console.log('New quote from new employee:', employeeName, 'Amount:', quote);
             setPriceQuote(quote);
+            setAssignedEmployee(employeeName);
+            setRequestState('quote_received');
+            
             setOngoingRequest(prev => prev ? {
               ...prev,
               priceQuote: quote,
-              employeeName: currentEmployeeName
+              employeeName: employeeName
             } : null);
-            setShowRealTimeUpdate(false);
-            setShowPriceQuote(true);
           },
-          setShowPriceQuote,
-          setShowRealTimeUpdate,
-          setStatus,
-          setDeclineReason,
-          setEmployeeLocation,
-          (employeeName: string) => {
-            console.log('New employee assignment:', employeeName);
-            if (employeeName && employeeName !== 'Unknown') {
-              setCurrentEmployeeName(employeeName);
-              setAssignedEmployee(employeeName); // Assign new employee
-              setEmployeeDeclineCount(0);
-              setHasReceivedRevision(false);
-              setOngoingRequest(prev => prev ? {
-                ...prev,
-                employeeName: employeeName
-              } : null);
-            } else {
-              setCurrentEmployeeName('');
-              setAssignedEmployee('');
-              setOngoingRequest(null);
-              setShowRealTimeUpdate(false);
-              setShowPriceQuote(false);
-              setStatus('declined');
-              setDeclineReason('No available employees. Please try again later.');
-              toast({
-                title: "No employees available",
-                description: "All employees are currently busy. Please try again later.",
-                variant: "destructive"
-              });
-            }
-          },
-          [] // Blacklist will be loaded from database in simulateEmployeeResponse
+          () => {
+            // No more employees available
+            setRequestState('cancelled');
+            setOngoingRequest(null);
+            toast({
+              title: "No technicians available",
+              description: "All technicians are currently busy. Please try again later.",
+              variant: "destructive"
+            });
+          }
         );
       }, 2000);
     }
-  }, [user, assignedEmployee, employeeDeclineCount, hasReceivedRevision, priceQuote, setOngoingRequest, type, userLocation, simulateEmployeeResponse, currentEmployeeName, ongoingRequest, addEmployeeToBlacklist]);
+  }, [user, assignedEmployee, hasDeclinedOnce, priceQuote, setOngoingRequest, type, userLocation, ongoingRequest, addEmployeeToBlacklist, simulateEmployeeResponse, requestState]);
   
   const handleCancelRequest = useCallback(async () => {
     if (ongoingRequest) {
-      // Clear blacklist when request is cancelled
       await SimulatedEmployeeBlacklistService.clearBlacklistForRequest(ongoingRequest.id);
     }
-    setAssignedEmployee('');
-    setEmployeeDeclineCount(0);
-    setHasReceivedRevision(false);
-    setCurrentEmployeeName('');
-    cancelRequest(setShowPriceQuote);
-  }, [cancelRequest, ongoingRequest]);
+    setRequestState('cancelled');
+    setOngoingRequest(null);
+    cancelRequest(() => {});
+  }, [cancelRequest, ongoingRequest, setOngoingRequest]);
 
   const showStoredPriceQuote = useCallback(() => {
     if (storedSnapshot) {
-      setShowPriceQuote(true);
+      setRequestState('quote_received');
     }
   }, [storedSnapshot]);
 
-  // Computed value for hasDeclinedOnce based on employee decline count and revision status
-  const hasDeclinedOnce = employeeDeclineCount > 0 || hasReceivedRevision;
+  const setShowPriceQuote = useCallback((show: boolean) => {
+    if (show && requestState === 'idle') {
+      setRequestState('quote_received');
+    } else if (!show && requestState === 'quote_received') {
+      setRequestState('searching');
+    }
+  }, [requestState]);
 
   return useMemo(() => ({
     message,
@@ -435,10 +371,10 @@ export const useServiceRequest = (
     showPriceQuote,
     setShowPriceQuote,
     priceQuote,
-    employeeLocation: employeeMovingLocation || employeeLocation,
+    employeeLocation,
     status,
-    declineReason,
-    currentEmployeeName: ongoingRequest?.employeeName || currentEmployeeName,
+    declineReason: '',
+    currentEmployeeName: assignedEmployee,
     hasDeclinedOnce,
     eta,
     showWaitingForRevision,
@@ -454,13 +390,11 @@ export const useServiceRequest = (
     isSubmitting,
     showRealTimeUpdate,
     showPriceQuote,
+    setShowPriceQuote,
     priceQuote,
-    employeeMovingLocation,
     employeeLocation,
     status,
-    declineReason,
-    ongoingRequest?.employeeName,
-    currentEmployeeName,
+    assignedEmployee,
     hasDeclinedOnce,
     eta,
     showWaitingForRevision,

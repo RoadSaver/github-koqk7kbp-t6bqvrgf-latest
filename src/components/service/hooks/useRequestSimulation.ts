@@ -7,7 +7,7 @@ import { useMemo, useCallback } from 'react';
 import { SimulatedEmployeeBlacklistService } from '@/services/simulatedEmployeeBlacklistService';
 
 export const useRequestSimulation = () => {
-  const { loadEmployees, getRandomEmployee } = useEmployeeSimulation();
+  const { loadEmployees, getAvailableEmployee } = useEmployeeSimulation();
   const { user } = useApp();
 
   const simulateEmployeeResponse = useCallback(async (
@@ -15,28 +15,17 @@ export const useRequestSimulation = () => {
     timestamp: string,
     type: ServiceType,
     userLocation: { lat: number; lng: number },
-    onQuoteReceived: (quote: number) => void,
-    setShowPriceQuote: (show: boolean) => void,
-    setShowRealTimeUpdate: (show: boolean) => void,
-    setStatus: (status: 'pending' | 'accepted' | 'declined') => void,
-    setDeclineReason: (reason: string) => void,
-    setEmployeeLocation: (location: { lat: number; lng: number } | undefined) => void,
-    setCurrentEmployeeName: (name: string) => void,
-    blacklistedEmployees: string[] = []
+    onQuoteReceived: (quote: number, employeeName: string) => void,
+    onNoEmployeeAvailable: () => void
   ) => {
     try {
       await loadEmployees();
-      const employee = getRandomEmployee(blacklistedEmployees);
+      const employee = await getAvailableEmployee(requestId);
       
       if (!employee) {
-        setStatus('declined');
-        setDeclineReason('No available employees. Please try again later.');
-        setShowRealTimeUpdate(false);
-        setCurrentEmployeeName('');
+        onNoEmployeeAvailable();
         return;
       }
-
-      setCurrentEmployeeName(employee.full_name);
 
       // Simulate employee response delay (2-5 seconds)
       setTimeout(() => {
@@ -54,24 +43,14 @@ export const useRequestSimulation = () => {
         const randomPrice = basePrice + Math.floor(Math.random() * 20) - 10;
         const finalPrice = Math.max(20, randomPrice);
         
-        onQuoteReceived(finalPrice);
-        
-        // Set employee location near user
-        const employeeLocation = {
-          lat: userLocation.lat + (Math.random() - 0.5) * 0.02,
-          lng: userLocation.lng + (Math.random() - 0.5) * 0.02
-        };
-        setEmployeeLocation(employeeLocation);
+        onQuoteReceived(finalPrice, employee.full_name);
       }, 2000 + Math.random() * 3000);
       
     } catch (error) {
       console.error('Error in employee simulation:', error);
-      setStatus('declined');
-      setDeclineReason('Error finding available employees. Please try again.');
-      setShowRealTimeUpdate(false);
-      setCurrentEmployeeName('');
+      onNoEmployeeAvailable();
     }
-  }, [loadEmployees, getRandomEmployee]);
+  }, [loadEmployees, getAvailableEmployee]);
 
   const handleAccept = useCallback(async (
     requestId: string,

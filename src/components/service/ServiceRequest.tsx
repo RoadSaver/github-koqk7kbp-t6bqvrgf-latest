@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import ServiceRequestDialog from './ServiceRequestDialog';
 import ServiceRequestForm from './ServiceRequestForm';
@@ -56,12 +55,10 @@ const ServiceRequest: React.FC<ServiceRequestProps> = ({ type, open, onClose, us
   const [showCancelConfirmDialog, setShowCancelConfirmDialog] = useState(false);
 
   // Get the actual price quote and employee name from ongoing request if available
-  // Use nullish coalescing (??) instead of logical OR (||) to properly handle 0 values
   const actualPriceQuote = ongoingRequest?.priceQuote ?? priceQuote;
   const actualEmployeeName = ongoingRequest?.employeeName ?? currentEmployeeName;
 
   // Effect to automatically show price quote if there's an ongoing request with a pending status
-  // or if explicitly requested via shouldShowPriceQuote prop
   useEffect(() => {
     if (open && ongoingRequest && ongoingRequest.status === 'pending') {
       if (shouldShowPriceQuote || (ongoingRequest.priceQuote !== undefined && ongoingRequest.priceQuote >= 0)) {
@@ -70,26 +67,23 @@ const ServiceRequest: React.FC<ServiceRequestProps> = ({ type, open, onClose, us
     }
   }, [open, ongoingRequest, shouldShowPriceQuote, setShowPriceQuote]);
 
-  // Only close dialog when service is completed (not when there's no ongoing request)
+  // Only close dialog when service is completed
   useEffect(() => {
     if (ongoingRequest === null && status === 'accepted' && open) {
-      // Service was completed, close the dialog
       onClose();
     }
   }, [ongoingRequest, status, open, onClose]);
 
   const handleAttemptClose = () => {
-    // If price quote is showing, just close the dialog but keep the request in price quote state
     if (showPriceQuote) {
       onClose();
       return;
     }
     
-    // Only show confirmation dialog for pending requests (not in price quote state)
     if (status === 'pending') {
       setShowCancelConfirmDialog(true);
     } else {
-      onClose(); // Close directly for accepted, declined, or initial state
+      onClose();
     }
   };
 
@@ -99,19 +93,14 @@ const ServiceRequest: React.FC<ServiceRequestProps> = ({ type, open, onClose, us
   };
 
   const handleDecline = (isSecondDecline: boolean = false) => {
-    // Use the hasDeclinedOnce from the centralized state
     if (!hasDeclinedOnce && !isSecondDecline) {
-      // First decline - this will be handled by handleDeclineQuote
       handleDeclineQuote(false);
     } else {
-      // This is the second decline - call the special decline logic
       handleDeclineQuote(true);
     }
   };
 
   const handlePriceQuoteClose = () => {
-    // Close the price quote dialog but keep the ongoing request active in price quote state
-    // When user reopens from ongoing requests, they'll see the price quote again
     onClose();
   };
 
